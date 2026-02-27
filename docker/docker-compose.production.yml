@@ -1,0 +1,53 @@
+# Lab 06 — Production: zabbix HA-ready with monitoring and external volumes
+---
+services:
+  zabbix:
+    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
+    container_name: it-stack-zabbix
+    restart: always
+    ports:
+      - "10051:$firstPort"
+    environment:
+      - IT_STACK_ENV=production
+      - KEYCLOAK_URL=
+      - DB_HOST=
+      - REDIS_HOST=
+      - GRAYLOG_HOST=
+    volumes:
+      - zabbix_data:/var/lib/zabbix
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+      restart_policy:
+        condition: any
+        delay: 5s
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "udp://${GRAYLOG_HOST}:12201"
+        tag: "it-stack-zabbix"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - it-stack-net
+
+networks:
+  it-stack-net:
+    external: true
+    name: it-stack-production
+
+volumes:
+  zabbix_data:
+    external: true
+    name: it-stack-zabbix-data

@@ -1,0 +1,36 @@
+# Lab 02 — External Dependencies: zabbix with external PostgreSQL and Redis
+---
+services:
+  zabbix:
+    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
+    container_name: it-stack-zabbix
+    restart: unless-stopped
+    ports:
+      - "10051:$firstPort"
+    environment:
+      - IT_STACK_ENV=lab-02-lan
+      - DB_HOST=
+      - DB_PORT=5432
+      - REDIS_HOST=
+    networks:
+      - it-stack-net
+
+  # Lightweight local DB for lab (replace with lab-db1 in real env)
+  postgres:
+    image: postgres:16
+    container_name: it-stack-zabbix-db
+    environment:
+      POSTGRES_DB: zabbix_db
+      POSTGRES_USER: zabbix_user
+      POSTGRES_PASSWORD: zabbix_pass
+    volumes:
+      - zabbix_pg_data:/var/lib/postgresql/data
+    networks:
+      - it-stack-net
+
+networks:
+  it-stack-net:
+    driver: bridge
+
+volumes:
+  zabbix_pg_data:

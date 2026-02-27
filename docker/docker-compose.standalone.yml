@@ -1,0 +1,29 @@
+# Lab 01 — Standalone: Complete Zabbix infrastructure monitoring in isolation
+# No external dependencies required.
+---
+services:
+  zabbix:
+    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
+    container_name: it-stack-zabbix
+    restart: unless-stopped
+    ports:
+      - "10051:$firstPort"
+    environment:
+      - IT_STACK_ENV=lab-01-standalone
+    volumes:
+      - zabbix_data:/var/lib/zabbix
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - it-stack-net
+
+networks:
+  it-stack-net:
+    driver: bridge
+
+volumes:
+  zabbix_data:

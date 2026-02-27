@@ -1,0 +1,26 @@
+# Lab 05 — Advanced Integration: zabbix with full IT-Stack ecosystem
+---
+services:
+  zabbix:
+    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
+    container_name: it-stack-zabbix
+    restart: unless-stopped
+    ports:
+      - "10051:$firstPort"
+    environment:
+      - IT_STACK_ENV=lab-05-integration
+      - KEYCLOAK_URL=
+      - DB_HOST=
+      - REDIS_HOST=
+      - SMTP_HOST=
+      - GRAYLOG_HOST=
+    extra_hosts:
+      - "lab-id1:10.0.50.11"
+      - "lab-db1:10.0.50.12"
+      - "lab-proxy1:10.0.50.15"
+    networks:
+      - it-stack-net
+
+networks:
+  it-stack-net:
+    driver: bridge

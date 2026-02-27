@@ -1,0 +1,57 @@
+# it-stack-zabbix.yml — IT-Stack Module Manifest
+# Module 19: Zabbix infrastructure monitoring
+
+module:
+  name: zabbix
+  number: "19"
+  repo: it-stack-dev/it-stack-zabbix
+  version: "0.1.0"
+  phase: 4
+  category: infrastructure
+  server: lab-comm1
+  description: "Zabbix infrastructure monitoring"
+
+upstream:
+  name: Zabbix
+  image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
+  license: AGPL-3.0
+
+ports:
+  - 10051 (Server)
+   - 3000 (Web UI)
+
+labs:
+  - id: "19-01"
+    name: Standalone
+    docker_compose: docker/docker-compose.standalone.yml
+    test_script: tests/labs/test-lab-19-01.sh
+  - id: "19-02"
+    name: External Dependencies
+    docker_compose: docker/docker-compose.lan.yml
+    test_script: tests/labs/test-lab-19-02.sh
+  - id: "19-03"
+    name: Advanced Features
+    docker_compose: docker/docker-compose.advanced.yml
+    test_script: tests/labs/test-lab-19-03.sh
+  - id: "19-04"
+    name: SSO Integration
+    docker_compose: docker/docker-compose.sso.yml
+    test_script: tests/labs/test-lab-19-04.sh
+  - id: "19-05"
+    name: Advanced Integration
+    docker_compose: docker/docker-compose.integration.yml
+    test_script: tests/labs/test-lab-19-05.sh
+  - id: "19-06"
+    name: Production Deployment
+    docker_compose: docker/docker-compose.production.yml
+    test_script: tests/labs/test-lab-19-06.sh
+
+resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 20
+
+health_check:
+  endpoint: /health
+  metrics_endpoint: /metrics
+  log_path: /var/log/zabbix/
