@@ -1,34 +1,210 @@
-# Lab 04 — SSO Integration: zabbix with Keycloak OIDC authentication
----
-services:
-  zabbix:
-    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
-    container_name: it-stack-zabbix
-    restart: unless-stopped
-    ports:
-      - "10051:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-04-sso
-      - KEYCLOAK_URL=
-      - KEYCLOAK_REALM=
-      - KEYCLOAK_CLIENT_ID=zabbix
-      - KEYCLOAK_CLIENT_SECRET=
-    networks:
-      - it-stack-net
+# =============================================================================
+# IT-Stack: Zabbix — Lab 04: SSO Integration
+# Module 19 · Phase 4 · Lab 04
+# =============================================================================
+# Services: MySQL · OpenLDAP · Keycloak · Mailhog · Zabbix Server · Zabbix Web
+# Ports:    Web:8433  Keycloak:8533  LDAP:3898  Mailhog:8733
+# Credentials:
+#   DB root:     RootLab04!
+#   Zabbix DB:   zabbix / ZabbixLab04!
+#   Zabbix UI:   Admin / zabbix
+#   Keycloak:    admin / Admin04!
+#   LDAP admin:  cn=admin,dc=lab,dc=local / LdapLab04!
+# What's new vs Lab 03:
+#   + OpenLDAP directory for LDAP user federation
+#   + Keycloak 24 dev-mode as SAML IdP (it-stack realm)
+#   + Zabbix SAML IdP env vars (ZBX_SAML_*)
+#   + Keycloak SAML metadata endpoint tested in Lab 04
+# =============================================================================
 
-  # Local Keycloak for SSO lab (replace with lab-id1 in real env)
-  keycloak:
-    image: quay.io/keycloak/keycloak:24
-    container_name: it-stack-zabbix-keycloak
+name: it-stack-zabbix-lab04
+
+services:
+
+  # ── MySQL ─────────────────────────────────────────────────────────────────
+  zabbix-s04-db:
+    image: mysql:8.0
+    container_name: zabbix-s04-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: RootLab04!
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab04!
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_bin
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin
+    volumes:
+      - zabbix-s04-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-pRootLab04!", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - zabbix-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ── OpenLDAP ───────────────────────────────────────────────────────────────
+  zabbix-s04-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: zabbix-s04-ldap
+    restart: unless-stopped
+    environment:
+      LDAP_ORGANISATION: "IT-Stack Lab"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapLab04!
+      LDAP_CONFIG_PASSWORD: ConfigLab04!
+      LDAP_BASE_DN: dc=lab,dc=local
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnly04!
+    ports:
+      - "3898:389"
+    volumes:
+      - zabbix-s04-ldap-data:/var/lib/ldap
+      - zabbix-s04-ldap-config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapLab04! cn=admin > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - zabbix-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  # ── Keycloak ───────────────────────────────────────────────────────────────
+  zabbix-s04-kc:
+    image: quay.io/keycloak/keycloak:24.0.3
+    container_name: zabbix-s04-kc
+    restart: unless-stopped
     command: start-dev
     environment:
       KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_ADMIN_PASSWORD: Admin04!
+      KC_HEALTH_ENABLED: "true"
+      KC_DB: dev-file
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
     ports:
-      - "8080:8080"
+      - "8533:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/realms/master || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
     networks:
-      - it-stack-net
+      - zabbix-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
+  # ── Mailhog ────────────────────────────────────────────────────────────────
+  zabbix-s04-mail:
+    image: mailhog/mailhog:latest
+    container_name: zabbix-s04-mail
+    restart: unless-stopped
+    ports:
+      - "8733:8025"
+    networks:
+      - zabbix-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.1"
+
+  # ── Zabbix Server ──────────────────────────────────────────────────────────
+  zabbix-s04-server:
+    image: zabbix/zabbix-server-mysql:ubuntu-7.0-latest
+    container_name: zabbix-s04-server
+    restart: unless-stopped
+    depends_on:
+      zabbix-s04-db:
+        condition: service_healthy
+    environment:
+      DB_SERVER_HOST: zabbix-s04-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab04!
+      MYSQL_ROOT_PASSWORD: RootLab04!
+      ZBX_STARTPOLLERS: "5"
+      ZBX_CACHESIZE: 32M
+    volumes:
+      - zabbix-s04-server-data:/var/lib/zabbix
+    networks:
+      - zabbix-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ── Zabbix Web ─────────────────────────────────────────────────────────────
+  zabbix-s04-web:
+    image: zabbix/zabbix-web-nginx-mysql:ubuntu-7.0-latest
+    container_name: zabbix-s04-web
+    restart: unless-stopped
+    depends_on:
+      zabbix-s04-db:
+        condition: service_healthy
+      zabbix-s04-server:
+        condition: service_started
+    ports:
+      - "8433:8080"
+    environment:
+      ZBX_SERVER_HOST: zabbix-s04-server
+      DB_SERVER_HOST: zabbix-s04-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab04!
+      MYSQL_ROOT_PASSWORD: RootLab04!
+      PHP_TZ: UTC
+      # Keycloak SAML IdP reference
+      KEYCLOAK_URL: http://zabbix-s04-kc:8080
+      KEYCLOAK_REALM: it-stack
+      KEYCLOAK_CLIENT_ID: zabbix
+      # Zabbix SAML config env vars
+      ZBX_SAML_IDP_ENTITY_ID: http://zabbix-s04-kc:8080/realms/it-stack
+      ZBX_SAML_SSO_SERVICE: http://zabbix-s04-kc:8080/realms/it-stack/protocol/saml
+      ZBX_SAML_SLO_SERVICE: http://zabbix-s04-kc:8080/realms/it-stack/protocol/saml
+      ZBX_SAML_USERNAME_ATTRIBUTE: username
+      ZBX_SAML_SP_ENTITY_ID: http://localhost:8433/
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - zabbix-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+# ── Networks ───────────────────────────────────────────────────────────────────
 networks:
-  it-stack-net:
+  zabbix-s04-net:
+    name: zabbix-s04-net
     driver: bridge
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  zabbix-s04-db-data:
+  zabbix-s04-ldap-data:
+  zabbix-s04-ldap-config:
+  zabbix-s04-server-data:
