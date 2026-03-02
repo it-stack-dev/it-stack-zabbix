@@ -1,36 +1,112 @@
-# Lab 02 — External Dependencies: zabbix with external PostgreSQL and Redis
+# Lab 02 — External Dependencies: Zabbix with external MySQL and Mailhog
+# Models the LAN tier: MySQL on data-net (simulates lab-db1), app on app-net.
+# Zabbix Web: http://localhost:8413 (admin / zabbix)
+# Mailhog:    http://localhost:8713
 ---
+name: it-stack-zabbix-lab02
+
 services:
-  zabbix:
-    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
-    container_name: it-stack-zabbix
+
+  # ── External Database (simulates lab-db1) ─────────────────────────────────
+  zabbix-l02-db:
+    image: mysql:8.0
+    container_name: zabbix-l02-db
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: RootLab02!
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab02!
+    volumes:
+      - zabbix-l02-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uzabbix", "-pZabbixLab02!"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - zabbix-l02-data-net
+
+  # ── External SMTP relay (Mailhog) ─────────────────────────────────────────
+  zabbix-l02-mail:
+    image: mailhog/mailhog:latest
+    container_name: zabbix-l02-mail
     restart: unless-stopped
     ports:
-      - "10051:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-02-lan
-      - DB_HOST=
-      - DB_PORT=5432
-      - REDIS_HOST=
+      - "8713:8025"
     networks:
-      - it-stack-net
+      - zabbix-l02-app-net
 
-  # Lightweight local DB for lab (replace with lab-db1 in real env)
-  postgres:
-    image: postgres:16
-    container_name: it-stack-zabbix-db
+  # ── Zabbix Server ─────────────────────────────────────────────────────────
+  zabbix-l02-server:
+    image: zabbix/zabbix-server-mysql:ubuntu-7.0-latest
+    container_name: zabbix-l02-server
+    restart: unless-stopped
+    depends_on:
+      zabbix-l02-db:
+        condition: service_healthy
     environment:
-      POSTGRES_DB: zabbix_db
-      POSTGRES_USER: zabbix_user
-      POSTGRES_PASSWORD: zabbix_pass
+      DB_SERVER_HOST: zabbix-l02-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab02!
+      MYSQL_ROOT_PASSWORD: RootLab02!
+      ZBX_TIMEOUT: 30
+      ZBX_STARTPINGERS: 1
+    ports:
+      - "10051:10051"
     volumes:
-      - zabbix_pg_data:/var/lib/postgresql/data
+      - zabbix-l02-alertscripts:/usr/lib/zabbix/alertscripts
+      - zabbix-l02-externalscripts:/usr/lib/zabbix/externalscripts
+    healthcheck:
+      test: ["CMD-SHELL", "zabbix_server --version > /dev/null 2>&1 && echo ok || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     networks:
-      - it-stack-net
+      - zabbix-l02-data-net
+      - zabbix-l02-app-net
+
+  # ── Zabbix Web Frontend ───────────────────────────────────────────────────
+  zabbix-l02-web:
+    image: zabbix/zabbix-web-nginx-mysql:ubuntu-7.0-latest
+    container_name: zabbix-l02-web
+    restart: unless-stopped
+    depends_on:
+      zabbix-l02-db:
+        condition: service_healthy
+      zabbix-l02-server:
+        condition: service_started
+    environment:
+      ZBX_SERVER_HOST: zabbix-l02-server
+      ZBX_SERVER_PORT: "10051"
+      DB_SERVER_HOST: zabbix-l02-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab02!
+      PHP_TZ: UTC
+      ZBX_SERVER_NAME: "IT-Stack Zabbix Lab02"
+    ports:
+      - "8413:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ | grep -qi 'zabbix\\|login' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 8
+      start_period: 120s
+    networks:
+      - zabbix-l02-app-net
 
 networks:
-  it-stack-net:
+  zabbix-l02-data-net:
+    driver: bridge
+  zabbix-l02-app-net:
     driver: bridge
 
 volumes:
-  zabbix_pg_data:
+  zabbix-l02-db-data:
+  zabbix-l02-alertscripts:
+  zabbix-l02-externalscripts:

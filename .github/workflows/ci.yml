@@ -111,3 +111,39 @@ run: bash tests/labs/test-lab-19-01.sh
       - name: Cleanup
         if: always()
         run: docker compose -f docker/docker-compose.standalone.yml down -v
+  lab-02-smoke:
+    name: Lab 02 -- Zabbix External Dependencies (MySQL + Mailhog)
+    runs-on: ubuntu-latest
+    needs: validate
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get install -y curl default-mysql-client -qq
+
+      - name: Validate LAN compose
+        run: docker compose -f docker/docker-compose.lan.yml config -q && echo "LAN compose valid"
+
+      - name: Start LAN stack
+        run: docker compose -f docker/docker-compose.lan.yml up -d
+
+      - name: Wait for MySQL
+        run: timeout 120 bash -c 'until docker exec zabbix-l02-db mysqladmin ping -uzabbix -pZabbixLab02! --silent; do sleep 5; done'
+
+      - name: Wait for Mailhog
+        run: timeout 60 bash -c 'until curl -sf http://localhost:8713/api/v2/messages; do sleep 5; done'
+
+      - name: Wait for Zabbix web
+        run: timeout 300 bash -c 'until curl -sf http://localhost:8413/ | grep -qi "zabbix\|login"; do sleep 10; done'
+
+      - name: Run Lab 19-02 test script
+        run: bash tests/labs/test-lab-19-02.sh --no-cleanup
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker/docker-compose.lan.yml logs
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker/docker-compose.lan.yml down -v
