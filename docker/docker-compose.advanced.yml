@@ -1,34 +1,159 @@
-# Lab 03 — Advanced Features: zabbix with TLS, resource limits, logging
+# Lab 03 — Advanced Features: Zabbix with Agent2 self-monitoring + resource limits
+# Zabbix Agent2 added for server self-monitoring · extra pollers configured
+# Zabbix Web: http://localhost:8423 (admin / zabbix)
+# Mailhog:    http://localhost:8723
 ---
+name: it-stack-zabbix-lab03
+
 services:
-  zabbix:
-    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
-    container_name: it-stack-zabbix
+
+  # ── External Database ───────────────────────────────────────────────────
+  zabbix-a03-db:
+    image: mysql:8.0
+    container_name: zabbix-a03-db
     restart: unless-stopped
-    ports:
-      - "10051:$firstPort"
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin --default-authentication-plugin=mysql_native_password
     environment:
-      - IT_STACK_ENV=lab-03-advanced
-      - TLS_ENABLED=true
+      MYSQL_ROOT_PASSWORD: RootLab03!
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab03!
     volumes:
-      - zabbix_data:/var/lib/zabbix
-      - ./certs:/etc/ssl/certs:ro
+      - zabbix-a03-db-data:/var/lib/mysql
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: G
+          cpus: "0.5"
+          memory: 512M
     logging:
       driver: json-file
-      options:
-        max-size: "100m"
-        max-file: "5"
+      options: {max-size: "50m", max-file: "3"}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uzabbix", "-pZabbixLab03!"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
-      - it-stack-net
+      - zabbix-a03-net
+
+  # ── SMTP relay (Mailhog) ─────────────────────────────────────────────
+  zabbix-a03-mail:
+    image: mailhog/mailhog:latest
+    container_name: zabbix-a03-mail
+    restart: unless-stopped
+    ports:
+      - "8723:8025"
+    networks:
+      - zabbix-a03-net
+
+  # ── Zabbix Server (extra pollers + resource limits) ───────────────────
+  zabbix-a03-server:
+    image: zabbix/zabbix-server-mysql:ubuntu-7.0-latest
+    container_name: zabbix-a03-server
+    restart: unless-stopped
+    depends_on:
+      zabbix-a03-db: {condition: service_healthy}
+    environment:
+      DB_SERVER_HOST: zabbix-a03-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab03!
+      MYSQL_ROOT_PASSWORD: RootLab03!
+      ZBX_TIMEOUT: 30
+      ZBX_STARTPOLLERS: 5
+      ZBX_STARTPINGERS: 3
+      ZBX_STARTDISCOVERERS: 2
+      ZBX_CACHESIZE: 32M
+      ZBX_HISTORYCACHESIZE: 16M
+      ZBX_TRENDCACHESIZE: 4M
+    ports:
+      - "10051:10051"
+    volumes:
+      - zabbix-a03-alertscripts:/usr/lib/zabbix/alertscripts
+      - zabbix-a03-externalscripts:/usr/lib/zabbix/externalscripts
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    logging:
+      driver: json-file
+      options: {max-size: "100m", max-file: "5"}
+    healthcheck:
+      test: ["CMD-SHELL", "zabbix_server --version > /dev/null 2>&1 && echo ok || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    networks:
+      - zabbix-a03-net
+
+  # ── Zabbix Web Frontend ──────────────────────────────────────────────
+  zabbix-a03-web:
+    image: zabbix/zabbix-web-nginx-mysql:ubuntu-7.0-latest
+    container_name: zabbix-a03-web
+    restart: unless-stopped
+    depends_on:
+      zabbix-a03-db: {condition: service_healthy}
+      zabbix-a03-server: {condition: service_started}
+    environment:
+      ZBX_SERVER_HOST: zabbix-a03-server
+      ZBX_SERVER_PORT: "10051"
+      DB_SERVER_HOST: zabbix-a03-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab03!
+      PHP_TZ: UTC
+      ZBX_SERVER_NAME: "IT-Stack Zabbix Lab03"
+    ports:
+      - "8423:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ | grep -qi 'zabbix\\|login' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 8
+      start_period: 120s
+    networks:
+      - zabbix-a03-net
+
+  # ── Zabbix Agent 2 (self-monitoring — new in Lab 03) ─────────────────
+  zabbix-a03-agent:
+    image: zabbix/zabbix-agent2:ubuntu-7.0-latest
+    container_name: zabbix-a03-agent
+    restart: unless-stopped
+    depends_on:
+      zabbix-a03-server: {condition: service_started}
+    environment:
+      ZBX_HOSTNAME: "zabbix-a03-server"
+      ZBX_SERVER_HOST: zabbix-a03-server
+      ZBX_SERVER_PORT: "10051"
+      ZBX_PASSIVE_ALLOW: "true"
+      ZBX_ACTIVE_ALLOW: "true"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: json-file
+      options: {max-size: "20m", max-file: "3"}
+    networks:
+      - zabbix-a03-net
 
 networks:
-  it-stack-net:
+  zabbix-a03-net:
     driver: bridge
 
 volumes:
-  zabbix_data:
+  zabbix-a03-db-data:
+  zabbix-a03-alertscripts:
+  zabbix-a03-externalscripts:
