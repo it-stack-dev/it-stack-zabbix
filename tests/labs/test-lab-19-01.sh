@@ -44,20 +44,87 @@ fi
 # ── PHASE 3: Functional Tests ─────────────────────────────────────────────────
 info "Phase 3: Functional Tests (Lab 01 — Standalone)"
 
-# TODO: Add module-specific functional tests here
-# Example:
-# if curl -sf http://localhost:10051/health > /dev/null 2>&1; then
-#     pass "Health endpoint responds"
-# else
-#     fail "Health endpoint not reachable"
-# fi
+ZABBIX_WEB="http://localhost:8403"
+ZABBIX_SERVER_PORT=10051
+NO_CLEANUP=${NO_CLEANUP:-0}
 
-warn "Functional tests for Lab 19-01 pending implementation"
+cleanup() {
+    if [ "${NO_CLEANUP}" = "1" ]; then
+        info "NO_CLEANUP=1 — skipping teardown"
+    else
+        info "Phase 4: Cleanup"
+        docker compose -f "${COMPOSE_FILE}" down -v --remove-orphans 2>/dev/null || true
+        info "Cleanup complete"
+    fi
+}
+trap cleanup EXIT
 
-# ── PHASE 4: Cleanup ──────────────────────────────────────────────────────────
-info "Phase 4: Cleanup"
-docker compose -f "${COMPOSE_FILE}" down -v --remove-orphans
-info "Cleanup complete"
+section() { echo -e "\n${CYAN}## $1${NC}"; }
+
+# ── PHASE 1: Setup ────────────────────────────────────────────────────────────
+section "Phase 1: Setup"
+docker compose -f "${COMPOSE_FILE}" up -d
+info "Waiting 120s for Zabbix to initialize (MySQL + server + web)..."
+sleep 120
+
+# ── PHASE 2: Health Checks ────────────────────────────────────────────────────
+section "Phase 2: Health Checks"
+
+if docker compose -f "${COMPOSE_FILE}" ps zabbix-s01-db 2>/dev/null | grep -q 'Up\|running'; then
+    pass "2.1 MySQL (zabbix-s01-db) is up"
+else
+    fail "2.1 MySQL is not running"
+fi
+
+if docker compose -f "${COMPOSE_FILE}" ps zabbix-s01-server 2>/dev/null | grep -q 'Up\|running'; then
+    pass "2.2 Zabbix server (zabbix-s01-server) is up"
+else
+    fail "2.2 Zabbix server is not running"
+fi
+
+if docker compose -f "${COMPOSE_FILE}" ps zabbix-s01-web 2>/dev/null | grep -q 'Up\|running'; then
+    pass "2.3 Zabbix web (zabbix-s01-web) is up"
+else
+    fail "2.3 Zabbix web is not running"
+fi
+
+# ── PHASE 3: Functional Tests ─────────────────────────────────────────────────
+section "Phase 3: Functional Tests"
+
+# 3.1 Web UI responds
+HTTP_CODE=$(curl -o /dev/null -sw '%{http_code}' -L "${ZABBIX_WEB}/" 2>/dev/null || echo 000)
+if echo "${HTTP_CODE}" | grep -q '^[23]'; then
+    pass "3.1 Zabbix web UI accessible (HTTP ${HTTP_CODE})"
+else
+    fail "3.1 Zabbix web UI not accessible (HTTP ${HTTP_CODE})"
+fi
+
+# 3.2 Web UI contains Zabbix content
+RESPONSE=$(curl -sfL "${ZABBIX_WEB}/" 2>/dev/null || echo '')
+if echo "${RESPONSE}" | grep -qi 'zabbix\|login\|monitoring'; then
+    pass "3.2 Zabbix web UI contains application content"
+else
+    warn "3.2 Could not confirm Zabbix content (app may still be starting)"
+fi
+
+# 3.3 Zabbix API endpoint responds
+HTTP_API=$(curl -o /dev/null -sw '%{http_code}' \
+    -X POST "${ZABBIX_WEB}/api_jsonrpc.php" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"apiinfo.version","params":{},"id":1}' \
+    2>/dev/null || echo 000)
+if echo "${HTTP_API}" | grep -q '^[23]'; then
+    pass "3.3 Zabbix JSON-RPC API responds (HTTP ${HTTP_API})"
+else
+    warn "3.3 Zabbix JSON-RPC API not yet ready (HTTP ${HTTP_API})"
+fi
+
+# 3.4 Zabbix server port is listening
+if bash -c "</dev/tcp/localhost/${ZABBIX_SERVER_PORT}" 2>/dev/null; then
+    pass "3.4 Zabbix server port ${ZABBIX_SERVER_PORT} is open"
+else
+    warn "3.4 Zabbix server port ${ZABBIX_SERVER_PORT} not yet open"
+fi
 
 # ── Results ───────────────────────────────────────────────────────────────────
 echo ""
