@@ -1,12 +1,248 @@
-# Lab 06 — Production: zabbix HA-ready with monitoring and external volumes
----
+# =============================================================================
+# IT-Stack: Zabbix — Lab 06: Production Deployment
+# Module 19 · Phase 4 · Lab 06
+# =============================================================================
+# Services: MySQL · OpenLDAP · Keycloak · Mailhog · Zabbix Server · Zabbix Web
+# Ports:    Web:8463  KC:8563  LDAP:3874  MH:8753
+# Credentials:
+#   DB root: RootProd06!  zabbix: ZabbixProd06!
+#   Keycloak: admin / Admin06!
+#   LDAP:     cn=admin,dc=lab,dc=local / LdapProd06!
+# Production features vs Lab 05:
+#   + restart: unless-stopped on ALL services
+#   + Resource limits AND reservations on every service
+#   + IT_STACK_ENV: production  IT_STACK_LAB: "06" labels
+#   + Healthcheck start_period on long-boot services
+# =============================================================================
+
+name: it-stack-zabbix-lab06
+
 services:
-  zabbix:
-    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
-    container_name: it-stack-zabbix
-    restart: always
+
+  # ── MySQL ───────────────────────────────────────────────────────────────────
+  zabbix-p06-db:
+    image: mysql:8.0
+    container_name: zabbix-p06-db
+    restart: unless-stopped
+    command: --character-set-server=utf8 --collation-server=utf8_bin --log-bin-trust-function-creators=1
+    environment:
+      MYSQL_ROOT_PASSWORD: RootProd06!
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixProd06!
+    volumes:
+      - zabbix-p06-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-pRootProd06!", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - zabbix-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  # ── OpenLDAP ───────────────────────────────────────────────────────────────
+  zabbix-p06-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: zabbix-p06-ldap
+    restart: unless-stopped
+    environment:
+      LDAP_ORGANISATION: "IT-Stack Production"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapProd06!
+      LDAP_CONFIG_PASSWORD: ConfigProd06!
+      LDAP_BASE_DN: dc=lab,dc=local
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnlyProd06!
     ports:
-      - "10051:$firstPort"
+      - "3874:389"
+    volumes:
+      - zabbix-p06-ldap-data:/var/lib/ldap
+      - zabbix-p06-ldap-config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapProd06! cn=admin > /dev/null 2>&1 && echo ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - zabbix-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+
+  # ── Keycloak ───────────────────────────────────────────────────────────────
+  zabbix-p06-kc:
+    image: quay.io/keycloak/keycloak:24.0.3
+    container_name: zabbix-p06-kc
+    restart: unless-stopped
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Admin06!
+      KC_HEALTH_ENABLED: "true"
+      KC_DB: dev-file
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "8563:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/realms/master || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - zabbix-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  # ── Mailhog ────────────────────────────────────────────────────────────────
+  zabbix-p06-mail:
+    image: mailhog/mailhog:latest
+    container_name: zabbix-p06-mail
+    restart: unless-stopped
+    ports:
+      - "8753:8025"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8025/api/v2/messages || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zabbix-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+
+  # ── Zabbix Server ──────────────────────────────────────────────────────────
+  zabbix-p06-server:
+    image: zabbix/zabbix-server-mysql:ubuntu-7.0-latest
+    container_name: zabbix-p06-server
+    restart: unless-stopped
+    depends_on:
+      zabbix-p06-db:
+        condition: service_healthy
+    environment:
+      IT_STACK_ENV: production
+      IT_STACK_MODULE: zabbix
+      IT_STACK_LAB: "06"
+      DB_SERVER_HOST: zabbix-p06-db
+      DB_SERVER_PORT: "3306"
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixProd06!
+      MYSQL_ROOT_PASSWORD: RootProd06!
+      ZBX_LDAP_HOST: zabbix-p06-ldap
+      ZBX_LDAP_PORT: "389"
+      ZBX_LDAP_BASE_DN: dc=lab,dc=local
+      ZBX_LDAP_BIND_DN: cn=admin,dc=lab,dc=local
+      ZBX_LDAP_BIND_PASSWORD: LdapProd06!
+      KEYCLOAK_URL: http://zabbix-p06-kc:8080
+      KEYCLOAK_REALM: it-stack
+      KEYCLOAK_CLIENT_ID: zabbix
+      KEYCLOAK_CLIENT_SECRET: zabbix-prod-secret-06
+      MATTERMOST_URL: http://mattermost.lab.local:8065
+      MATTERMOST_TOKEN: prod-mm-token-06
+      MATTERMOST_CHANNEL: ops-alerts
+      GRAYLOG_URL: http://graylog.lab.local:9000
+    healthcheck:
+      test: ["CMD-SHELL", "zabbix_server -R diaginfo > /dev/null 2>&1 && echo ok || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - zabbix-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  # ── Zabbix Web Frontend ─────────────────────────────────────────────────
+  zabbix-p06-web:
+    image: zabbix/zabbix-web-nginx-mysql:ubuntu-7.0-latest
+    container_name: zabbix-p06-web
+    restart: unless-stopped
+    depends_on:
+      zabbix-p06-db:
+        condition: service_healthy
+      zabbix-p06-server:
+        condition: service_started
+    ports:
+      - "8463:8080"
+    environment:
+      IT_STACK_ENV: production
+      IT_STACK_MODULE: zabbix
+      IT_STACK_LAB: "06"
+      ZBX_SERVER_HOST: zabbix-p06-server
+      ZBX_SERVER_PORT: "10051"
+      DB_SERVER_HOST: zabbix-p06-db
+      DB_SERVER_PORT: "3306"
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixProd06!
+      MYSQL_ROOT_PASSWORD: RootProd06!
+      PHP_TZ: UTC
+      ZBX_SERVER_NAME: IT-Stack Zabbix Production
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - zabbix-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+
+# ── Networks ───────────────────────────────────────────────────────────────────
+networks:
+  zabbix-p06-net:
+    name: zabbix-p06-net
+    driver: bridge
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  zabbix-p06-db-data:
+  zabbix-p06-ldap-data:
+  zabbix-p06-ldap-config:
     environment:
       - IT_STACK_ENV=production
       - KEYCLOAK_URL=
