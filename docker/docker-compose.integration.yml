@@ -1,26 +1,229 @@
-# Lab 05 — Advanced Integration: zabbix with full IT-Stack ecosystem
----
+# =============================================================================
+# IT-Stack: Zabbix — Lab 05: Advanced Integration
+# Module 19 · Phase 4 · Lab 05
+# =============================================================================
+# Services: MySQL · OpenLDAP · Keycloak · WireMock (Mattermost-mock)
+#           Mailhog · Zabbix Server · Zabbix Web
+# Ports:    Web:8443  WireMock:8764  KC:8543  LDAP:3888  MH:8743
+# Credentials:
+#   DB root:  RootLab05!  zabbix: ZabbixLab05!
+#   Keycloak: admin / Admin05!
+#   LDAP:     cn=admin,dc=lab,dc=local / LdapLab05!
+# What's new vs Lab 04:
+#   + WireMock 3.x simulates Mattermost incoming webhook API
+#   + Zabbix web configured with MATTERMOST_WEBHOOK_URL for alerts
+#   + Integration tested: Zabbix alert → Mattermost #ops-alerts (WireMock)
+# =============================================================================
+
+name: it-stack-zabbix-lab05
+
 services:
-  zabbix:
-    image: zabbix/zabbix-server-pgsql:alpine-6.4-latest
-    container_name: it-stack-zabbix
+
+  # ── MySQL ──────────────────────────────────────────────────────────────────
+  zabbix-i05-db:
+    image: mysql:8.0
+    container_name: zabbix-i05-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: RootLab05!
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab05!
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin --default-authentication-plugin=mysql_native_password
+    volumes:
+      - zabbix-i05-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-pRootLab05!", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - zabbix-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ── OpenLDAP ───────────────────────────────────────────────────────────────
+  zabbix-i05-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: zabbix-i05-ldap
+    restart: unless-stopped
+    environment:
+      LDAP_ORGANISATION: "IT-Stack Lab"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapLab05!
+      LDAP_CONFIG_PASSWORD: ConfigLab05!
+      LDAP_BASE_DN: dc=lab,dc=local
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnly05!
+    ports:
+      - "3888:389"
+    volumes:
+      - zabbix-i05-ldap-data:/var/lib/ldap
+      - zabbix-i05-ldap-config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapLab05! cn=admin > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - zabbix-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  # ── Keycloak ───────────────────────────────────────────────────────────────
+  zabbix-i05-kc:
+    image: quay.io/keycloak/keycloak:24.0.3
+    container_name: zabbix-i05-kc
+    restart: unless-stopped
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Admin05!
+      KC_HEALTH_ENABLED: "true"
+      KC_DB: dev-file
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "8543:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/realms/master || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - zabbix-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
+  # ── WireMock — Mattermost incoming webhook mock ───────────────────────────────
+  zabbix-i05-mock:
+    image: wiremock/wiremock:3.3.1
+    container_name: zabbix-i05-mock
+    restart: unless-stopped
+    command: >
+      --port=8080
+      --verbose
+      --global-response-templating
+    ports:
+      - "8764:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/__admin/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - zabbix-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  # ── Mailhog ────────────────────────────────────────────────────────────────
+  zabbix-i05-mail:
+    image: mailhog/mailhog:latest
+    container_name: zabbix-i05-mail
     restart: unless-stopped
     ports:
-      - "10051:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-05-integration
-      - KEYCLOAK_URL=
-      - DB_HOST=
-      - REDIS_HOST=
-      - SMTP_HOST=
-      - GRAYLOG_HOST=
-    extra_hosts:
-      - "lab-id1:10.0.50.11"
-      - "lab-db1:10.0.50.12"
-      - "lab-proxy1:10.0.50.15"
+      - "8743:8025"
     networks:
-      - it-stack-net
+      - zabbix-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.1"
 
+  # ── Zabbix Server ──────────────────────────────────────────────────────────
+  zabbix-i05-server:
+    image: zabbix/zabbix-server-mysql:ubuntu-7.0-latest
+    container_name: zabbix-i05-server
+    restart: unless-stopped
+    depends_on:
+      zabbix-i05-db:
+        condition: service_healthy
+    environment:
+      DB_SERVER_HOST: zabbix-i05-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab05!
+      MYSQL_ROOT_PASSWORD: RootLab05!
+    volumes:
+      - zabbix-i05-server-data:/var/lib/zabbix
+    networks:
+      - zabbix-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ── Zabbix Web ─────────────────────────────────────────────────────────────
+  zabbix-i05-web:
+    image: zabbix/zabbix-web-nginx-mysql:ubuntu-7.0-latest
+    container_name: zabbix-i05-web
+    restart: unless-stopped
+    depends_on:
+      zabbix-i05-db:
+        condition: service_healthy
+      zabbix-i05-server:
+        condition: service_started
+      zabbix-i05-ldap:
+        condition: service_healthy
+      zabbix-i05-mock:
+        condition: service_healthy
+    ports:
+      - "8443:8080"
+    environment:
+      ZBX_SERVER_HOST: zabbix-i05-server
+      ZBX_SERVER_PORT: "10051"
+      DB_SERVER_HOST: zabbix-i05-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ZabbixLab05!
+      MYSQL_ROOT_PASSWORD: RootLab05!
+      PHP_TZ: UTC
+      KEYCLOAK_URL: http://zabbix-i05-kc:8080
+      KEYCLOAK_REALM: it-stack
+      KEYCLOAK_CLIENT_ID: zabbix
+      ZBX_SAML_IDP_ENTITY_ID: http://zabbix-i05-kc:8080/realms/it-stack
+      ZBX_SAML_SSO_SERVICE: http://zabbix-i05-kc:8080/realms/it-stack/protocol/saml
+      ZBX_SAML_SLO_SERVICE: http://zabbix-i05-kc:8080/realms/it-stack/protocol/saml
+      ZBX_SAML_USERNAME_ATTRIBUTE: username
+      ZBX_SAML_SP_ENTITY_ID: zabbix
+      # Mattermost integration (via WireMock)
+      MATTERMOST_WEBHOOK_URL: http://zabbix-i05-mock:8080/hooks/lab05
+      MATTERMOST_CHANNEL: ops-alerts
+      MATTERMOST_USERNAME: zabbix-bot
+    networks:
+      - zabbix-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+# ── Networks ───────────────────────────────────────────────────────────────────
 networks:
-  it-stack-net:
+  zabbix-i05-net:
+    name: zabbix-i05-net
     driver: bridge
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  zabbix-i05-db-data:
+  zabbix-i05-ldap-data:
+  zabbix-i05-ldap-config:
+  zabbix-i05-server-data:
