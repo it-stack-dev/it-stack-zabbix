@@ -77,7 +77,7 @@ services:
     ports:
       - "8403:8080"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ | grep -qi 'zabbix\|login' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ | grep -qi 'zabbix|login' || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 8
